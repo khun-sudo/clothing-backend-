@@ -1,0 +1,97 @@
+from flask import Flask, request, jsonify
+from flask_cors import CORS
+import psycopg2
+from psycopg2.extras import RealDictCursor
+import hashlib
+import time
+
+app = Flask(__name__)
+CORS(app)  # ဖုန်း သို့မဟုတ် တက်ဘလက်မှ လှမ်းခေါ်ခွင့်ပြုရန် CORS ဖွင့်ခြင်း
+
+EXCHANGE_RATE = 120.0
+
+# [အရေးကြီး] အောက်ပါနေရာတွင် Supabase မှရရှိခဲ့သော URI လိပ်စာကို ထည့်သွင်းပါ။
+# [YOUR-PASSWORD] နေရာတွင် မိမိ၏ Database Password ကို အစားထိုးရန် မမေ့ပါနှင့်။
+DB_URL = "postgresql://postgres:[YOUR-PASSWORD]@db.xxxxxxxxxxxxxxxxxxxx.supabase.co:5432/postgres"
+
+def get_db_connection():
+    conn = psycopg2.connect(DB_URL, cursor_factory=RealDictCursor)
+    return conn
+
+# ၁။ Barcode ဖြင့် ပစ္စည်း ရှာဖွေသည့် API
+@app.route('/api/products/<barcode>', methods=['GET'])
+def get_product(barcode):
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute('SELECT * FROM products WHERE barcode = %s', (barcode,))
+        product = cursor.fetchone()
+        conn.close()
+        
+        if product:
+            price_mmk = product['price_thb'] * EXCHANGE_RATE
+            return jsonify({
+                "barcode": product['barcode'],
+                "name": product['name'],
+                "price_thb": product['price_thb'],
+                "price_mmk": price_mmk,
+                "stock": product['stock']
+            }), 200
+        return jsonify({"message": "Product not found"}), 404
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+# ၂။ ငွေချေရန် အော်ဒါစတင်ဆောက်ခြင်းနှင့် QR Request ထုတ်ပေးခြင်း
+@app.route('/api/merchant/checkout', methods=['POST'])
+def merchant_checkout():
+    try:
+        data = request.json
+        barcode = data['barcode']
+        qty = int(data['quantity'])
+        pay_method = data['payment_method']
+        
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        
+        cursor.execute('SELECT * FROM products WHERE barcode = %s', (barcode,))
+        product = cursor.fetchone()
+        
+        if not product or product['stock'] < qty:
+            conn.close()
+            return jsonify({"message": "ပစ္စည်းမရှိပါ သို့မဟုတ် လက်ကျန်မလုံလောက်ပါ"}), 400
+            
+        total_mmk = (product['price_thb'] * qty) * EXCHANGE_RATE
+        merchant_order_id = f"SHOP_{int(time.time())}"
+        
+        # Database တွင် အခြေအနေကို PENDING အဖြစ် သိမ်းဆည်းခြင်း
+        cursor.execute(
+            'INSERT INTO orders (merchant_order_id, barcode, quantity, total_mmk, payment_method, status) VALUES (%s, %s, %s, %s, %s, %s)',
+            (merchant_order_id, barcode, qty, total_mmk, pay_method, 'PENDING')
+        )
+        conn.commit()
+        conn.close()
+
+        # Official QR Image ထုတ်ပေးခြင်း (နမူနာအဖြစ် QR Generator သုံးထားပါသည်)
+        official_qr_url = f"https://qrserver.com_{total_mmk}_Order_{merchant_order_id}"
+        return jsonify({"order_id": merchant_order_id, "qr_url": official_qr_url, "amount": total_mmk}), 200
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+# ၃။ Frontend မှ ငွေဝင်/မဝင် စက္ကန့်အလိုက် လှမ်းစစ်သည့် API (Polling)
+@app.route('/api/order/status/<order_id>', methods=['GET'])
+def check_order_status(order_id):
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute('SELECT status FROM orders WHERE merchant_order_id = %s', (order_id,))
+        order = cursor.fetchone()
+        conn.close()
+        if order:
+            return jsonify({"status": order['status']}), 200
+        return jsonify({"status": "NOT_FOUND"}), 404
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+if __name__ == '__main__':
+    app.run(debug=True)
+

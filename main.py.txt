@@ -1,409 +1,89 @@
-<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>HAZEL SHOP POS (v4 - Production)</title>
-    <script src="https://tailwindcss.com"></script>
-    <style>
-        .page { display: none; }
-        .page.active { display: block; }
-        @media print {
-            body * { display: none !important; }
-            #print-area, #print-area * { display: block !important; }
-            #print-area { position: absolute; left: 0; top: 0; width: 100%; }
-        }
-        .receipt-box { width: 300px; font-family: monospace; }
-        .sticker-box { width: 180px; height: 110px; border: 1px dashed #999; padding: 6px; font-family: sans-serif; text-align: center; background: white; }
-    </style>
-</head>
-<body class="bg-gray-100 font-sans">
+from flask import Flask, request, jsonify
+from flask_cors import CORS
+import psycopg2
+from psycopg2.extras import RealDictCursor
+import time
 
-    <!-- LOGIN SCREEN -->
-    <div id="login-page" class="page active flex items-center justify-center min-h-screen">
-        <div class="bg-white p-8 rounded-lg shadow-md w-80 text-center">
-            <h1 class="text-2xl font-bold text-indigo-600 mb-2">HAZEL SHOP POS</h1>
-            <p class="text-gray-500 text-sm mb-6">Enter PIN to Login</p>
-            <input type="password" id="login-pin" placeholder="••••" maxlength="4" class="w-full text-center text-2xl tracking-widest border rounded p-2 mb-4 focus:outline-none focus:ring-2 focus:ring-indigo-500">
-            <button onclick="handleLogin()" class="w-full bg-indigo-600 text-white py-2 rounded font-semibold hover:bg-indigo-700">Login</button>
-            <p class="text-xs text-gray-400 mt-4">Demo: Owner (0000) | Staff (1234)</p>
-        </div>
-    </div>
+app = Flask(__name__)
+CORS(app) 
 
-    <!-- MAIN APP STRUCTURE -->
-    <div id="app-container" class="page min-h-screen flex flex-col">
-        <nav class="bg-indigo-600 text-white p-4 flex justify-between items-center shadow-md no-print">
-            <div class="flex items-center space-x-4">
-                <span class="font-bold text-lg">HAZEL SHOP</span>
-                <span id="user-badge" class="bg-indigo-800 text-xs px-2 py-1 rounded"></span>
-            </div>
-            <div class="flex space-x-2 text-sm">
-                <button onclick="switchTab('sales-tab')" class="hover:bg-indigo-700 px-3 py-1 rounded">Sales (အရောင်း)</button>
-                <button onclick="switchTab('reports-tab')" class="hover:bg-indigo-700 px-3 py-1 rounded">Reports (စာရင်းချုပ်)</button>
-                <button id="setup-nav-btn" onclick="switchTab('setup-tab')" class="hover:bg-indigo-700 px-3 py-1 rounded hidden">Settings (စနစ်ပြင်ဆင်မှု)</button>
-                <button onclick="handleLogout()" class="bg-red-500 hover:bg-red-600 px-3 py-1 rounded">Logout</button>
-            </div>
-        </nav>
+EXCHANGE_RATE = 120.0 # လက်ရှိ ငွေလဲနှုန်း (၁ ဘတ် = ၁၂၀ ကျပ်)
 
-        <div class="p-4 flex-1 container mx-auto no-print">
-            
-            <!-- SALES TAB -->
-            <div id="sales-tab" class="tab-content hidden grid grid-cols-1 md:grid-cols-3 gap-4">
-                <div class="md:col-span-2 bg-white p-4 rounded shadow">
-                    <h2 class="text-lg font-bold mb-4 flex justify-between">
-                        <span>New Sale (အရောင်းမျက်နှာပြင်)</span>
-                        <select id="currency-select" class="border text-sm p-1 rounded">
-                            <option value="MMK">MMK (Ks)</option>
-                            <option value="THB">THB (฿)</option>
-                        </select>
-                    </h2>
-                    <div class="mb-4 bg-gray-50 p-3 rounded border">
-                        <label class="block text-xs font-semibold text-gray-600 mb-1">Barcode Scanner Input</label>
-                        <div class="flex space-x-2">
-                            <input type="text" id="scan-input" placeholder="Scan barcode or type item_code..." class="flex-1 border p-2 text-sm rounded" onkeypress="if(event.key === 'Enter') handleScan()">
-                            <button onclick="handleScan()" class="bg-indigo-500 text-white px-4 rounded text-sm">Add</button>
-                        </div>
-                    </div>
-                    <table class="w-full text-left border-collapse text-sm">
-                        <thead>
-                            <tr class="bg-gray-100 border-b"><th class="p-2">Item</th><th class="p-2">Price</th><th class="p-2 w-20">Qty</th><th class="p-2">Total</th><th class="p-2">Action</th></tr>
-                        </thead>
-                        <tbody id="cart-table-body"></tbody>
-                    </table>
-                </div>
-                <div class="bg-white p-4 rounded shadow flex flex-col justify-between">
-                    <div>
-                        <h2 class="text-lg font-bold mb-4">Checkout (ငွေချေစနစ်)</h2>
-                        <div class="space-y-3">
-                            <div class="flex justify-between text-gray-600"><span>Subtotal</span><span id="summary-subtotal">0</span></div>
-                            <div>
-                                <label class="block text-xs text-gray-500">Discount</label>
-                                <input type="number" id="summary-discount" value="0" min="0" oninput="updateCartTotals()" class="w-full border p-1 rounded text-right">
-                            </div>
-                            <hr>
-                            <div class="flex justify-between text-xl font-bold text-indigo-600"><span>Total</span><div><span id="summary-total">0</span> <span class="currency-label">MMK</span></div></div>
-                       <div>
-                                <label class="block text-xs text-gray-500 mb-1">Payment Method</label>
-                                <select id="payment-method-select" class="w-full border p-2 rounded">
-                                    <option value="Cash">Cash</option><option value="KBZPay">KBZPay</option><option value="WavePay">WavePay</option>
-                                </select>
-                            </div>
-                        </div>
-                    </div>
-                    <button onclick="processCheckout()" class="w-full bg-green-500 text-white py-3 rounded-lg font-bold text-lg mt-6 hover:bg-green-600">Save & Print (အရောင်းသိမ်း/ဘောက်ချာထုတ်မည်)</button>
-                </div>
-            </div>
-            <!-- REPORTS TAB -->
-            <div id="reports-tab" class="tab-content hidden space-y-4">
-                <div class="bg-white p-4 rounded shadow">
-                    <div class="flex justify-between items-center mb-4">
-                        <h2 class="text-lg font-bold">Daily Sales & Inventory Report</h2>
-                        <button onclick="exportSalesData()" class="bg-blue-500 text-white px-3 py-1 rounded text-sm hover:bg-blue-600">Export Sales (JSON)</button>
-                    </div>
-                    <div class="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
-                        <div class="bg-indigo-50 p-3 rounded"><p class="text-xs text-gray-500">Total Sales (MMK)</p><p id="rep-total-mmk" class="text-xl font-bold text-indigo-600">0</p></div>
-                        <div class="bg-emerald-50 p-3 rounded"><p class="text-xs text-gray-500">Total Sales (THB)</p><p id="rep-total-thb" class="text-xl font-bold text-emerald-600">0</p></div>
-                        <div class="bg-gray-50 p-3 rounded"><p class="text-xs text-gray-500">Items Sold</p><p id="rep-items-sold" class="text-xl font-bold">0</p></div>
-                    </div>
-                    <h3 class="font-semibold text-sm mb-2 text-gray-700">Transaction History</h3>
-                    <div class="overflow-x-auto">
-                        <table class="w-full text-left border-collapse text-xs">
-                            <thead><tr class="bg-gray-100 border-b"><th class="p-2">Time</th><th class="p-2">Items</th><th class="p-2">Total</th><th class="p-2">Pay Method</th><th class="p-2">Staff</th></tr></thead>
-                            <tbody id="report-transactions-body"></tbody>
-                        </table>
-                    </div>
-                </div>
-            </div>
+DB_URL = "postgresql://postgres:[YOUR-PASSWORD]@db.xxxxxxxxxxxxxxxxxxxx.supabase.co:5432/postgres"
 
-            <!-- SETUP TAB (OWNER ONLY) -->
-            <div id="setup-tab" class="tab-content hidden space-y-4">
-                <div class="bg-white p-4 rounded shadow">
-                    <div class="flex justify-between items-center mb-4">
-                        <h2 class="text-lg font-bold">Initial Data Import & Utilities</h2>
-                        <button onclick="clearAllData()" class="bg-red-500 text-white px-3 py-1 rounded text-xs hover:bg-red-600">⚠️ Clear All System Data</button>
-                    </div>   
-                    <div class="mb-4 border p-4 rounded bg-gray-50">
-                        <label class="block font-semibold text-sm mb-2">Import Items CSV</label>
-                        <input type="file" id="csv-items-file" accept=".csv" class="block w-full text-sm text-gray-500 file:mr-4 file:py-2 file:px-4 file:rounded file:border-0 file:text-sm file:font-semibold file:bg-indigo-50 file:text-indigo-700 hover:file:bg-indigo-100">
-                        <button onclick="importCSV('items')" class="mt-2 bg-indigo-600 text-white px-3 py-1 rounded text-xs">Upload Items</button>
-                    </div>
+def get_db_connection():
+    return psycopg2.connect(DB_URL, cursor_factory=RealDictCursor)
 
-                    <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
-                        <div class="border p-4 rounded bg-gray-50">
-                            <h3 class="font-semibold text-sm mb-2">Item Master / Stock Status</h3>
-                            <div class="overflow-y-auto max-h-60 text-xs">
-                                <table class="w-full text-left">
-                                    <thead><tr class="border-b"><th>Item/SKU</th><th>Barcode</th><th>Stock</th><th>Action</th></tr></thead>
-                                    <tbody id="setup-items-list"></tbody>
-                                </table>
-                            </div>
-                        </div>
-                        <div class="border p-4 rounded bg-gray-50 flex flex-col items-center">
-                            <h3 class="font-semibold text-sm mb-2 w-full text-left">Barcode Sticker Preview</h3>
-                            <div id="sticker-preview-container" class="my-4">
-                                <p class="text-xs text-gray-400 italic">ပစ္စည်းဘေးရှိ "Preview" ကိုနှိပ်ပါ</p>
-                            </div>
-                            <button onclick="window.print()" class="bg-indigo-600 text-white px-4 py-1.5 rounded text-sm font-semibold hover:bg-indigo-700">Print Label</button>
-                        </div>
-                    </div>
-                </div>
-            </div>
-        </div>
-        <div id="print-area" class="hidden flex justify-center p-4 bg-white text-black"></div>
-    </div>
-    <script>
-        let currentUser = null;
-        let masterItems = [];
-        let transactions = [];
-        let cart = [];
-        // HARDCODED CONFIG FOR BUSINESS INFO
-        const SHOP_CONFIG = {
-            name: "HAZEL SHOP",
-            phone: "09-123456789, 09-987654321",
-            address: “Tachileik city”         facebook: "HAZEL SHOP - Clothing & Apparel",
-            lowStockThreshold: 5 // Trigger warning if stock drops below this
-        };
-        const demoItems = [
-            { item_code: "TSH-001-BLK-M", barcode: "9556000000011", item_name: "Cotton Tee - Black (M)", sale_price_default: 12000, stock_qty: 12 },
-            { item_code: "TSH-001-BLK-L", barcode: "9556000000012", item_name: "Cotton Tee - Black (L)", sale_price_default: 12000, stock_qty: 3 }, // Will trigger alert
-            { item_code: "PNT-001-BLU-32", barcode: "9556000000031", item_name: "Jeans - Blue (32)", sale_price_default: 25000, stock_qty: 20 }
-        ];
-        function loadFromStorage() {
-            const storedItems = localStorage.getItem('hazel_master_items');
-            const storedSales = localStorage.getItem('hazel_transactions');
-            if (storedItems) masterItems = JSON.parse(storedItems);
-            else { masterItems = [...demoItems]; localStorage.setItem('hazel_master_items', JSON.stringify(masterItems)); }
-            if (storedSales) transactions = JSON.parse(storedSales);
-            else transactions = [];
-        }
-        function saveToStorage() {
-            localStorage.setItem('hazel_master_items', JSON.stringify(masterItems));
-            localStorage.setItem('hazel_transactions', JSON.stringify(transactions));
-        }
-        function handleLogin() {
-            const pin = document.getElementById('login-pin').value;
-            if (pin === "0000") currentUser = { username: "owner", role: "owner" };
-            else if (pin === "1234") currentUser = { username: "staff1", role: "staff" };
-            else { alert("Invalid PIN!"); return; }
-            initApp();
-        }
-        function handleLogout() {
-            currentUser = null; cart = [];
-            document.getElementById('login-page').classList.add('active');
-            document.getElementById('app-container').classList.remove('active');
-        }
-        function initApp() {
-            loadFromStorage();
-            document.getElementById('login-page').classList.remove('active');
-            document.getElementById('app-container').classList.add('active');
-            document.getElementById('user-badge').innerText = `${currentUser.username.toUpperCase()} (${currentUser.role})`;
-            if (currentUser.role === 'owner') document.getElementById('setup-nav-btn').classList.remove('hidden');
-            else document.getElementById('setup-nav-btn').classList.add('hidden');
-            switchTab('sales-tab');
-            renderSetupItems();
-        }
-        function switchTab(tabId) {
-            document.querySelectorAll('.tab-content').forEach(el => el.classList.add('hidden'));
-            document.getElementById(tabId).classList.remove('hidden');
-            if(tabId === 'sales-tab') document.getElementById('scan-input').focus();
-            if(tabId === 'reports-tab') renderReports();
-            if(tabId === 'setup-tab') renderSetupItems();
-        }
-        function handleScan() {
-            const inputField = document.getElementById('scan-input');
-            const query = inputField.value.trim();
-            if (!query) return;
-            const item = masterItems.find(i => i.barcode === query || i.item_code.toLowerCase() === query.toLowerCase());
-            if (item) { 
-                if(item.stock_qty <= 0) { alert("⚠️ ဤပစ္စည်းသည် Stock လုံးဝမရှိတော့ပါ။"); }
-                addToCart(item); 
-                inputField.value = ""; 
-            } else { alert("ပစ္စည်းရှာမတွေ့ပါ။"); }
-            inputField.focus();
-        }
-        function addToCart(item) {
-            const existing = cart.find(c => c.item_code === item.item_code);
-            if (existing) existing.qty += 1;
-            else cart.push({ ...item, qty: 1 });
-            renderCart();
-        }
-        function updateCartQty(itemCode, newQty) {
-            const item = cart.find(c => c.item_code === itemCode);
-            if (item) { item.qty = parseInt(newQty) || 1; updateCartTotals(); }
-        }
-        function removeFromCart(itemCode) {
-            cart = cart.filter(c => c.item_code !== itemCode);
-            renderCart();
-        }
-        function renderCart() {
-            const tbody = document.getElementById('cart-table-body');
-            tbody.innerHTML = "";
-            cart.forEach(item => {
-                // Low stock validation alert style inside cart
-                const isLow = (item.stock_qty - item.qty) < SHOP_CONFIG.lowStockThreshold;
-                const warningTxt = isLow ? `<br><span class="text-[10px] text-red-500 font-bold">⚠️ Low Stock Alert (လက်ကျန်: ${item.stock_qty})</span>` : '';
-                const tr = document.createElement('tr');
-                tr.className = "border-b hover:bg-gray-50";
-                tr.innerHTML = `<td class="p-2 font-medium">${item.item_name}${warningTxt}<br><span class="text-xs text-gray-400">${item.item_code}</span></td>
-                    <td class="p-2">${item.sale_price_default.toLocaleString()}</td>
-                    <td class="p-2"><input type="number" value="${item.qty}" min="1" class="w-16 border rounded text-center" onchange="updateCartQty('${item.item_code}', this.value)"></td>
-                    <td class="p-2 font-semibold">${(item.sale_price_default * item.qty).toLocaleString()}</td>
-                    <td class="p-2"><button onclick="removeFromCart('${item.item_code}')" class="text-red-500 font-bold">X</button></td>`;
-                tbody.appendChild(tr);
-            });
-            updateCartTotals();
-        }
-        function updateCartTotals() {
-            const currentCurrency = document.getElementById('currency-select').value;
-            document.querySelectorAll('.currency-label').forEach(el => el.innerText = currentCurrency);
-            let subtotal = cart.reduce((acc, item) => acc + (item.sale_price_default * item.qty), 0);
-            let discount = parseFloat(document.getElementById('summary-discount').value) || 0;
-            let total = Math.max(0, subtotal - discount);
-            document.getElementById('summary-subtotal').innerText = subtotal.toLocaleString();
-            document.getElementById('summary-total').innerText = total.toLocaleString();
-        }
-        function processCheckout() {
-            if (cart.length === 0) return alert("Cart ထဲတွင် ပစ္စည်းမရှိပါ။");
-            const currentCurrency = document.getElementById('currency-select').value;
-            const discount = parseFloat(document.getElementById('summary-discount').value) || 0;
-            let subtotal = cart.reduce((acc, item) => acc + (item.sale_price_default * item.qty), 0);
-            let total = subtotal - discount;
-            const payMethod = document.getElementById('payment-method-select').value;
-            const slipNo = 'HZ-' + Math.floor(100000 + Math.random() * 900000);
-            cart.forEach(cItem => {
-                const orig = masterItems.find(m => m.item_code === cItem.item_code);
-                if (orig) orig.stock_qty -= cItem.qty;
-            });
-            transactions.push({
-                slipNo, timestamp: new Date().toLocaleTimeString(), date: new Date().toLocaleDateString(),
-                items: cart.map(c => `${c.item_name} (x${c.qty})`).join(', '),
-                total, currency: currentCurrency, paymentMethod: payMethod, staff: currentUser.username, itemCount: cart.length
-            });
+# (က) Barcode ဖြင့် ပစ္စည်းရှာဖွေရန်
+@app.route('/api/products/<barcode>', methods=['GET'])
+def get_product(barcode):
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute('SELECT * FROM products WHERE barcode = %s', (barcode,))
+    p = cursor.fetchone()
+    conn.close()
+    if p:
+        return jsonify({
+            "barcode": p['barcode'], "name": p['name'],
+            "price_thb": p['price_thb'], "price_mmk": p['price_thb'] * EXCHANGE_RATE, "stock": p['stock']
+        }), 200
+    return jsonify({"message": "Product not found"}), 404
 
-            saveToStorage();
-           let receiptRows = cart.map(c => `
-                <div class="flex justify-between text-xs my-1"><span>${c.item_name} x${c.qty}</span><span>${(c.sale_price_default * c.qty).toLocaleString()}</span></div>
-            `).join('');
-            // COMMERCIALLY ENHANCED RECEIPT BLOCK WITH SHOP CONFIG METADATA
-            document.getElementById('print-area').innerHTML = `
-                <div class="receipt-box text-center border p-4 bg-white text-black mx-auto">
-                    <h2 class="text-lg font-bold tracking-wider">${SHOP_CONFIG.name}</h2>
-                    <p class="text-[11px] text-gray-700 font-semibold">FB: ${SHOP_CONFIG.facebook}</p>
-                    <p class="text-[10px] text-gray-600">Ph: ${SHOP_CONFIG.phone}</p>
-                    <p class="text-[10px] text-gray-500 leading-tight">${SHOP_CONFIG.address}</p>
-                    <hr class="border-dashed my-2">
-                    <div class="text-left text-[11px] space-y-0.5">
-                        <div><b>Slip:</b> ${slipNo}</div>
-                        <div><b>Date:</b> ${new Date().toLocaleDateString()} ${new Date().toLocaleTimeString()}</div>
-                        <div><b>Staff:</b> ${currentUser.username}</div>
-                    </div>
-                    <hr class="border-dashed my-2">
-                    ${receiptRows}
-                    <hr class="border-dashed my-2">
-                    <div class="flex justify-between text-xs"><span>Subtotal:</span><span>${subtotal.toLocaleString()} ${currentCurrency}</span></div>
-                    <div class="flex justify-between text-xs"><span>Discount:</span><span>-${discount.toLocaleString()} ${currentCurrency}</span></div>
-                    <div class="flex justify-between text-sm font-bold mt-1"><span>Total Bill:</span><span>${total.toLocaleString()} ${currentCurrency}</span></div>
-                    <hr class="border-dashed my-2">
-                    <p class="text-xs font-bold bg-gray-100 p-1 rounded">Paid Via: ${payMethod}</p>
-                    <p class="text-[11px] mt-4 font-medium italic text-gray-600">ဝယ်ယူအားပေးမှုကို အထူးကျေးဇူးတင်ပါသည်!</p>
-                </div>
-            `;
-            window.print();
-            cart = []; document.getElementById('summary-discount').value = "0"; renderCart();
-        }
-        function previewSticker(itemCode) {
-            const item = masterItems.find(i => i.item_code === itemCode);
-            if (!item) return;
-            const htmlContent = `
-                <div class="sticker-box flex flex-col justify-between shadow mx-auto">
-                    <div class="text-xs font-bold text-gray-800 truncate">${item.item_name}</div>
-                    <div class="text-[10px] text-gray-500 font-mono tracking-wider">${item.item_code}</div>
-                    <div class="flex items-center justify-center space-x-[2px] h-6 my-1 px-2">
-                        <div class="w-[2px] h-full bg-black"></div><div class="w-[1px] h-full bg-black"></div><div class="w-[3px] h-full bg-black"></div><div class="w-[1px] h-full bg-black"></div><div class="w-[2px] h-full bg-black"></div>
-                    </div>
-                    <div class="text-xs font-mono font-bold">${item.barcode}</div>
-                    <div class="text-sm font-bold text-indigo-700 border-t pt-0.5 mt-0.5">${item.sale_price_default.toLocaleString()} Ks</div>
-                </div>
-            `;
- document.getElementById('sticker-preview-container').innerHTML = htmlContent;
-  document.getElementById('print-area').innerHTML = htmlContent;
-        }
- function renderSetupItems() {
-            const tbody = document.getElementById('setup-items-list');
-            if(!tbody) return;
-            tbody.innerHTML = "";
-            masterItems.forEach(i => {
-                // Warning badge logic for low stock status inside backend setup view
-                const isLow = i.stock_qty < SHOP_CONFIG.lowStockThreshold;
-                const stockStyle = isLow ? "text-red-600 font-black bg-red-100 px-1.5 py-0.5 rounded" : "font-bold text-gray-800";
-const tr = document.createElement('tr');
-                tr.className = "border-b";
-                tr.innerHTML = `<td class="p-1.5">${i.item_code}</td>
-                    <td class="p-1.5 font-mono">${i.barcode}</td>
-                    <td class="p-1.5"><span class="${stockStyle}">${i.stock_qty}</span></td>
-                    <td class="p-1.5"><button onclick="previewSticker('${i.item_code}')" class="bg-indigo-100 hover:bg-indigo-200 text-indigo-700 px-2 py-0.5 rounded text-[11px]">Preview</button></td>`;
-                tbody.appendChild(tr);
-            });
-        }
-function renderReports() {
-            const tbody = document.getElementById('report-transactions-body');
-            tbody.innerHTML = "";
-            let totalMMK = 0, totalTHB = 0, totalItems = 0;
-            transactions.forEach(t => {
-                if (t.currency === "MMK") totalMMK += t.total;
-                if (t.currency === "THB") totalTHB += t.total;
-                totalItems += t.itemCount;
-                const tr = document.createElement('tr');
-                tr.className = "border-b text-xs";
-                tr.innerHTML = `<td class="p-2">${t.timestamp}</td><td>${t.items}</td><td class="font-bold">${t.total.toLocaleString()} ${t.currency}</td><td>${t.paymentMethod}</td><td>${t.staff}</td>`;
-                tbody.appendChild(tr);
-            });
-            document.getElementById('rep-total-mmk').innerText = totalMMK.toLocaleString();
-            document.getElementById('rep-total-thb').innerText = totalTHB.toLocaleString();
-            document.getElementById('rep-items-sold').innerText = totalItems;
-        }
-   function importCSV(type) {
-            const fileInput = document.getElementById('csv-items-file');
-            const file = fileInput.files[0];
-            if (!file) return alert("CSV ဖိုင်အရင်ရွေးပါ။");
-            const reader = new FileReader();
-            reader.onload = function(e) {
-                const text = e.target.result;
-                const lines = text.split('\n');
-                const headers = lines[0].split(',').map(h => h.trim().replace(/["']/g, ""));
-                let importedData = [];
-                for (let i = 1; i < lines.length; i++) {
-                    if (!lines[i].trim()) continue;
-                    const cols = lines[i].split(',').map(c => c.trim().replace(/["']/g, ""));
-                    let obj = {};
-                    headers.forEach((header, index) => { obj[header] = cols[index]; });
-                    importedData.push(obj);
-                }
-                if (type === 'items') {
-    masterItems = importedData.map(item => ({    
- item_code: item.item_code, barcode: item.barcode, item_name: item.item_name,
-                        sale_price_default: parseFloat(item.sale_price_default) || 0, stock_qty: parseInt(item.stock_qty) || 0
-                    }));
-                    saveToStorage();
-                    alert(`အောင်မြင်ပါသည်။ ပစ္စည်း ${masterItems.length} မျိုး သွင်းပြီးပါပြီ။`);
-                    renderSetupItems();
-                }
-            };
-            reader.readAsText(file);
-        }
-function exportSalesData() {
-            if(transactions.length === 0) return alert("No transactions found.");
-            const dataStr = "data:text/json;charset=utf-8," + encodeURIComponent(JSON.stringify(transactions, null, 2));
-            const dl = document.createElement('a'); dl.setAttribute("href", dataStr);
-            dl.setAttribute("download", `hazel_sales_${new Date().toISOString().slice(0,10)}.json`);
-            dl.click();
-        }
-        function clearAllData() {
-            if(confirm("သတိပေးချက်။ ဒေတာအားလုံးကို ဖျက်ဆီးပြီး စနစ်ကိုအစပြန်စမလား။")) {
-                localStorage.clear(); masterItems = [...demoItems]; transactions = []; saveToStorage();
-                alert("ဒေတာအားလုံးကို ဖျက်ဆီးပြီးပါပြီ။"); renderSetupItems();
-            }
-        }
-    </script>
-</body>
-</html>
+# (ခ) Checkout အရောင်းစာရင်းနှင့် ဝင်ငွေ၊ အမြတ်တွက်ချက်သိမ်းဆည်းရန်
+@app.route('/api/merchant/checkout', methods=['POST'])
+def merchant_checkout():
+    data = request.json
+    barcode = data['barcode']
+    qty = int(data['quantity'])
+    pay_method = data['payment_method']
+    staff = data.get('staff_name', 'Staff')
+    
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute('SELECT * FROM products WHERE barcode = %s', (barcode,))
+    p = cursor.fetchone()
+    
+    if not p or p['stock'] < qty:
+        conn.close()
+        return jsonify({"message": "ပစ္စည်းမရှိပါ သို့မဟုတ် လက်ကျန်မလုံလောက်ပါ"}), 400
+        
+    total_thb = p['price_thb'] * qty
+    total_mmk = total_thb * EXCHANGE_RATE
+    profit_thb = (p['price_thb'] - p['capital_thb']) * qty
+    merchant_order_id = f"SHOP_{int(time.time())}"
+    
+    cursor.execute(
+        'INSERT INTO orders (merchant_order_id, barcode, quantity, total_thb, total_mmk, profit_thb, exchange_rate, payment_method, staff_name) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)',
+        (merchant_order_id, barcode, qty, total_thb, total_mmk, profit_thb, EXCHANGE_RATE, pay_method, staff)
+    )
+    cursor.execute('UPDATE products SET stock = stock - %s WHERE barcode = %s', (qty, barcode))
+    conn.commit()
+    conn.close()
+    
+    return jsonify({"status": "SUCCESS", "order_id": merchant_order_id}), 200
+
+# (ဂ) Any Device အတွက် စုစုပေါင်း ဝင်ငွေ၊ အမြတ်နှင့် အရောင်းမှတ်တမ်း စာရင်းချုပ်ကြည့်ရန်
+@app.route('/api/dashboard/report', methods=['GET'])
+def get_dashboard_report():
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    
+    # ဝင်ငွေ၊ အမြတ် ပေါင်းလဒ်များ တွက်ချက်ခြင်း
+    cursor.execute('SELECT COALESCE(SUM(total_thb), 0) as sales_thb, COALESCE(SUM(total_mmk), 0) as sales_mmk, COALESCE(SUM(profit_thb), 0) as profit_thb FROM orders')
+    summary = cursor.fetchone()
+    
+    # လတ်တလော အရောင်းမှတ်တမ်း (Transaction History) ၁၀ ခု ဆွဲယူခြင်း
+    cursor.execute('SELECT order_date, barcode, quantity, total_thb, total_mmk, payment_method, staff_name FROM orders ORDER BY order_date DESC LIMIT 10')
+    history = cursor.fetchall()
+    
+    conn.close()
+    return jsonify({
+        "total_sales_thb": summary['sales_thb'],
+        "total_sales_mmk": summary['sales_mmk'],
+        "total_profit_thb": summary['profit_thb'],
+        "total_profit_mmk": summary['profit_thb'] * EXCHANGE_RATE,
+        "transactions": history
+    }), 200
+
+if __name__ == '__main__':
+    app.run(debug=True)

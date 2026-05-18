@@ -94,4 +94,92 @@ def check_order_status(order_id):
 
 if __name__ == '__main__':
     app.run(debug=True)
+from flask import Flask, request, jsonify
+from flask_cors import CORS
+import psycopg2
+from psycopg2.extras import RealDictCursor
+import time
+
+app = Flask(__name__)
+CORS(app) # Any Device မှ လှမ်းခေါ်နိုင်ရန် CORS ဖွင့်ခြင်း
+
+EXCHANGE_RATE = 120.0 # ငွေလဲနှုန်း (၁ ဘတ် = ၁၂၀ ကျပ်)
+
+DB_URL = "postgresql://postgres:[YOUR-PASSWORD]@db.xxxxxxxxxxxxxxxxxxxx.supabase.co:5432/postgres"
+
+def get_db_connection():
+    return psycopg2.connect(DB_URL, cursor_factory=RealDictCursor)
+
+# (က) Barcode ဖြင့် ပစ္စည်းရှာဖွေရန်
+@app.route('/api/products/<barcode>', methods=['GET'])
+def get_product(barcode):
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute('SELECT * FROM products WHERE barcode = %s', (barcode,))
+    p = cursor.fetchone()
+    conn.close()
+    if p:
+        return jsonify({
+            "barcode": p['barcode'], "name": p['name'],
+            "price_thb": p['price_thb'], "price_mmk": p['price_thb'] * EXCHANGE_RATE, "stock": p['stock']
+        }), 200
+    return jsonify({"message": "Product not found"}), 404
+
+# (ခ) Checkout အရောင်းစာရင်းသွင်းရန်
+@app.route('/api/merchant/checkout', methods=['POST'])
+def merchant_checkout():
+    data = request.json
+    barcode = data['barcode']
+    qty = int(data['quantity'])
+    pay_method = data['payment_method']
+    
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute('SELECT * FROM products WHERE barcode = %s', (barcode,))
+    p = cursor.fetchone()
+    
+    if not p or p['stock'] < qty:
+        conn.close()
+        return jsonify({"message": "ပစ္စည်းမရှိပါ သို့မဟုတ် လက်ကျန်မလုံလောက်ပါ"}), 400
+        
+    total_thb = p['price_thb'] * qty
+    total_mmk = total_thb * EXCHANGE_RATE
+    profit_thb = (p['price_thb'] - p['capital_thb']) * qty
+    merchant_order_id = f"SHOP_{int(time.time())}"
+    
+    cursor.execute(
+        'INSERT INTO orders (merchant_order_id, barcode, quantity, total_thb, total_mmk, profit_thb, exchange_rate, payment_method, status) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)',
+        (merchant_order_id, barcode, qty, total_thb, total_mmk, profit_thb, EXCHANGE_RATE, pay_method, 'SUCCESS') # စမ်းသပ်ရန် ချက်ချင်း SUCCESS အဖြစ် သွင်းပေးထားပါသည်
+    )
+    cursor.execute('UPDATE products SET stock = stock - %s WHERE barcode = %s', (qty, barcode))
+    conn.commit()
+    conn.close()
+    
+    return jsonify({"order_id": merchant_order_id, "amount_mmk": total_mmk, "amount_thb": total_thb, "status": "SUCCESS"}), 200
+
+# (ဂ) Any Device အတွက် ဝင်ငွေ၊ အမြတ်နှင့် စာရင်းချုပ်ကြည့်ရန် API
+@app.route('/api/dashboard/report', methods=['GET'])
+def get_dashboard_report():
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    
+    # ဝင်ငွေ၊ အမြတ် ပေါင်းလဒ်များ တွက်ချက်ခြင်း
+    cursor.execute('SELECT COALESCE(SUM(total_thb), 0) as sales_thb, COALESCE(SUM(total_mmk), 0) as sales_mmk, COALESCE(SUM(profit_thb), 0) as profit_thb FROM orders WHERE status = \'SUCCESS\'')
+    summary = cursor.fetchone()
+    
+    # လတ်တလော အရောင်းရဆုံး ပစ္စည်း ၅ ခု
+    cursor.execute('SELECT o.barcode, p.name, SUM(o.quantity) as total_qty FROM orders o JOIN products p ON o.barcode = p.barcode GROUP BY o.barcode, p.name ORDER BY total_qty DESC LIMIT 5')
+    top_items = cursor.fetchall()
+    
+    conn.close()
+    return jsonify({
+        "total_sales_thb": summary['sales_thb'],
+        "total_sales_mmk": summary['sales_mmk'],
+        "total_profit_thb": summary['profit_thb'],
+        "total_profit_mmk": summary['profit_thb'] * EXCHANGE_RATE,
+        "top_selling_products": top_items
+    }), 200
+
+if __name__ == '__main__':
+    app.run(debug=True)
 

@@ -9,7 +9,7 @@ CORS(app)
 
 EXCHANGE_RATE = 120.0 # လက်ရှိ ငွေလဲနှုန်း (၁ ဘတ် = ၁၂၀ ကျပ်)
 
-DB_URL = "postgresql://postgres:[YOUR-PASSWORD]@db.xxxxxxxxxxxxxxxxxxxx.supabase.co:5432/postgres"
+DB_URL = "postgresql://postgres:[YOUR-PASSWORD]@db.kpiudickdkxszyxfmamx.supabase.co:5432/postgres"
 
 def get_db_connection():
     return psycopg2.connect(DB_URL, cursor_factory=RealDictCursor)

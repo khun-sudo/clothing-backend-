@@ -11,7 +11,7 @@ EXCHANGE_RATE = 120.0
 
 # [အရေးကြီး] အောက်ပါနေရာတွင် Supabase မှရရှိခဲ့သော URI လိပ်စာကို ထည့်သွင်းပါ။
 # [YOUR-PASSWORD] နေရာတွင် မိမိ၏ Database Password ကို အစားထိုးရန် မမေ့ပါနှင့်။
-DB_URL = "postgresql://postgres:[YOUR-PASSWORD]@db.xxxxxxxxxxxxxxxxxxxx.supabase.co:5432/postgres"
+DB_URL = "postgresql://postgres:[Khunzarhan@93]@db.xxxxxxxxxxxxxxxxxxxx.supabase.co:5432/postgres"
 
 def get_db_connection():
     conn = psycopg2.connect(DB_URL, cursor_factory=RealDictCursor)
